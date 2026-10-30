@@ -1,6 +1,6 @@
 # Korean MP3 → SRT (macOS)
 
-MP3 음성을 로컬 Whisper 모델로 한국어 자막(`.srt`)으로 변환하는 작은 CLI 프로젝트입니다. 음성 파일은 외부 서비스로 전송하지 않습니다. 첫 실행에는 모델을 한 번 다운로드하며, 이후 변환은 오프라인으로 동작합니다.
+MP3 음성을 로컬 Whisper 모델로 한국어 자막(`.srt`)으로 변환하는 작은 CLI 프로젝트입니다. 음성 파일은 외부 서비스로 전송하지 않습니다. 첫 실행에는 Whisper 모델과 작은 VAD 음성 감지 모델을 다운로드하며, 이후 변환은 오프라인으로 동작합니다.
 
 ## 요구 사항
 
@@ -32,6 +32,7 @@ Apple Silicon에서는 `whisper.cpp`가 Metal GPU 가속을 사용할 수 있습
 ```bash
 ./transcribe.py recording.mp3 -o subtitles/meeting.srt
 ./transcribe.py recording.mp3 --model small
+./transcribe.py recording.mp3 --vad-threshold 0.7
 ```
 
 외장하드에 모델 파일이 이미 있다면 파일 자체 또는 모델 폴더를 지정할 수 있습니다.
@@ -61,14 +62,17 @@ Apple Silicon에서는 `whisper.cpp`가 Metal GPU 가속을 사용할 수 있습
 ```text
 usage: transcribe.py [-h] [-o OUTPUT] [-m {small,medium,large-v3-turbo}]
                      [--model-path MODEL_PATH] [--threads THREADS]
-                     [--overwrite] audio
+                     [--vad-threshold VAD_THRESHOLD] [--overwrite] audio
 ```
 
 - `-o`, `--output`: SRT 저장 경로
 - `-m`, `--model`: Whisper 모델 (기본값 `medium`)
 - `--model-path`: 기존 모델 파일 또는 모델 폴더 경로. 생략하면 앱 지원 폴더에서 모델을 찾거나 다운로드
 - `--threads`: CPU 스레드 수 지정 (기본값은 자동)
+- `--vad-threshold`: 음성 판정 기준 (0~1, 기본값 `0.6`). 값을 높이면 잡음을 더 엄격하게 걸러내지만 작거나 조용한 발화가 누락될 수 있습니다.
 - `--overwrite`: 기존 SRT 파일 덮어쓰기
+
+Whisper에 오디오를 넘기기 전에 VAD가 음성 구간을 골라냅니다. 비음성 구간은 인식 대상에서 제외해 잡음에서 생기는 할루시네이션 자막을 줄입니다. VAD 모델(`ggml-silero-v6.2.0.bin`, 약 864 KB)은 Whisper 모델과 함께 `~/Library/Application Support/KoreanSRT/models/`에 저장됩니다. 이전 구간의 텍스트 문맥도 사용하지 않아, 잡음 구간에서 생긴 오인식이 이후 대사로 이어지는 현상을 줄입니다.
 
 ## 문제 해결
 

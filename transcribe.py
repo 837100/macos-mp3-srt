@@ -18,6 +18,11 @@ MODELS = {
     "large-v3-turbo": "ggml-large-v3-turbo.bin",
 }
 MODEL_BASE_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+VAD_MODEL_NAME = "ggml-silero-v6.2.0.bin"
+VAD_MODEL_URL = (
+    "https://huggingface.co/ggml-org/whisper-vad/resolve/main/"
+    f"{VAD_MODEL_NAME}"
+)
 APP_SUPPORT = Path.home() / "Library" / "Application Support" / "KoreanSRT"
 
 
@@ -34,6 +39,12 @@ def get_args() -> argparse.Namespace:
         help="기존 모델 파일 또는 모델 폴더 경로 (예: /Volumes/외장하드/models/ggml-medium.bin)",
     )
     parser.add_argument("--threads", type=int, help="CPU 스레드 수 (기본: 자동)")
+    parser.add_argument(
+        "--vad-threshold",
+        type=float,
+        default=0.6,
+        help="음성으로 판정할 VAD 임계값 0~1 (기본: 0.6, 높을수록 엄격)",
+    )
     parser.add_argument("--overwrite", action="store_true", help="기존 SRT 파일 덮어쓰기")
     return parser.parse_args()
 
@@ -43,6 +54,48 @@ def require_program(name: str) -> str:
     if path is None:
         raise RuntimeError(f"'{name}' 명령을 찾을 수 없습니다. ./setup.sh 를 실행하세요.")
     return path
+
+
+def require_vad_support(whisper_cli: str) -> None:
+    result = subprocess.run(
+        [whisper_cli, "--help"], capture_output=True, text=True, check=False
+    )
+    help_text = result.stdout + result.stderr
+    if (
+        result.returncode != 0
+        or "--vad-model" not in help_text
+        or "--vad " not in help_text
+    ):
+        raise RuntimeError(
+            "설치된 whisper-cli가 VAD를 지원하지 않습니다. "
+            "'brew upgrade whisper.cpp'를 실행해 주세요."
+        )
+
+
+def download_model(url: str, model_path: Path, label: str) -> Path:
+    partial = model_path.with_suffix(model_path.suffix + ".part")
+    print(f"{label} 다운로드 중: {model_path.name} (첫 실행에만 필요합니다)")
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "KoreanSRT/1.0"})
+        with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as out:
+            total = int(response.headers.get("Content-Length", "0"))
+            downloaded = 0
+            while True:
+                block = response.read(1024 * 1024)
+                if not block:
+                    break
+                out.write(block)
+                downloaded += len(block)
+                if total:
+                    print(f"\r  {downloaded / total * 100:5.1f}%", end="", flush=True)
+        if downloaded == 0 or (total and downloaded != total):
+            raise RuntimeError("모델 다운로드 크기가 예상과 다릅니다. 다시 실행해 주세요.")
+        partial.replace(model_path)
+        print(f"\n모델 저장 완료: {model_path}")
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    return model_path
 
 
 def ensure_model(model_name: str, model_path: Path | None = None) -> Path:
@@ -63,29 +116,16 @@ def ensure_model(model_name: str, model_path: Path | None = None) -> Path:
         return model_path
 
     url = f"{MODEL_BASE_URL}/{model_path.name}"
-    partial = model_path.with_suffix(model_path.suffix + ".part")
-    print(f"모델 다운로드 중: {model_name} (첫 실행에만 필요합니다)")
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": "KoreanSRT/1.0"})
-        with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as out:
-            total = int(response.headers.get("Content-Length", "0"))
-            downloaded = 0
-            while True:
-                block = response.read(1024 * 1024)
-                if not block:
-                    break
-                out.write(block)
-                downloaded += len(block)
-                if total:
-                    print(f"\r  {downloaded / total * 100:5.1f}%", end="", flush=True)
-        if total and partial.stat().st_size != total:
-            raise RuntimeError("모델 다운로드 크기가 예상과 다릅니다. 다시 실행해 주세요.")
-        partial.replace(model_path)
-        print(f"\n모델 저장 완료: {model_path}")
-    except Exception:
-        partial.unlink(missing_ok=True)
-        raise
-    return model_path
+    return download_model(url, model_path, f"Whisper 모델 ({model_name})")
+
+
+def ensure_vad_model() -> Path:
+    model_dir = APP_SUPPORT / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_dir / VAD_MODEL_NAME
+    if model_path.is_file() and model_path.stat().st_size > 0:
+        return model_path
+    return download_model(VAD_MODEL_URL, model_path, "음성 감지 모델")
 
 
 def confirm_overwrite(output: Path) -> bool:
@@ -113,6 +153,9 @@ def main() -> int:
     if audio.suffix.lower() != ".mp3":
         print("현재 입력 형식은 MP3만 지원합니다.", file=sys.stderr)
         return 2
+    if not 0 <= args.vad_threshold <= 1:
+        print("--vad-threshold 값은 0과 1 사이여야 합니다.", file=sys.stderr)
+        return 2
 
     output = (args.output.expanduser() if args.output else audio.with_suffix(".srt")).resolve()
     overwrite_allowed = args.overwrite
@@ -124,8 +167,10 @@ def main() -> int:
 
     try:
         whisper_cli = require_program("whisper-cli")
+        require_vad_support(whisper_cli)
         ffmpeg = require_program("ffmpeg")
         model = ensure_model(args.model, args.model_path)
+        vad_model = ensure_vad_model()
         output.parent.mkdir(parents=True, exist_ok=True)
 
         with tempfile.TemporaryDirectory(prefix="korean-srt-") as temp_dir:
@@ -138,7 +183,20 @@ def main() -> int:
                  "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)],
                 check=True,
             )
-            command = [whisper_cli, "-m", str(model), "-f", str(wav), "-l", "ko", "-osrt", "-of", str(base)]
+            command = [
+                whisper_cli,
+                "-m", str(model),
+                "-f", str(wav),
+                "-l", "ko",
+                "-osrt",
+                "-of", str(base),
+                # Keep a noisy or hallucinated segment from biasing later speech.
+                "-mc", "0",
+                # Run speech detection first so non-speech audio is not transcribed.
+                "--vad",
+                "--vad-model", str(vad_model),
+                "--vad-threshold", str(args.vad_threshold),
+            ]
             if args.threads:
                 if args.threads < 1:
                     raise RuntimeError("--threads 값은 1 이상이어야 합니다.")
