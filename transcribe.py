@@ -28,6 +28,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("audio", type=Path, help="입력 MP3 파일")
     parser.add_argument("-o", "--output", type=Path, help="출력 SRT 경로 (기본: 입력 파일과 같은 폴더)")
     parser.add_argument("-m", "--model", choices=MODELS, default="medium", help="모델 (기본: medium)")
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        help="기존 모델 파일 또는 모델 폴더 경로 (예: /Volumes/외장하드/models/ggml-medium.bin)",
+    )
     parser.add_argument("--threads", type=int, help="CPU 스레드 수 (기본: 자동)")
     parser.add_argument("--overwrite", action="store_true", help="기존 SRT 파일 덮어쓰기")
     return parser.parse_args()
@@ -40,7 +45,17 @@ def require_program(name: str) -> str:
     return path
 
 
-def ensure_model(model_name: str) -> Path:
+def ensure_model(model_name: str, model_path: Path | None = None) -> Path:
+    if model_path is not None:
+        model_path = model_path.expanduser().resolve()
+        if model_path.is_dir():
+            model_path = model_path / MODELS[model_name]
+        if not model_path.is_file():
+            raise RuntimeError(f"지정한 모델 파일을 찾을 수 없습니다: {model_path}")
+        if model_path.stat().st_size == 0:
+            raise RuntimeError(f"모델 파일이 비어 있습니다: {model_path}")
+        return model_path
+
     model_dir = APP_SUPPORT / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
     model_path = model_dir / MODELS[model_name]
@@ -73,6 +88,22 @@ def ensure_model(model_name: str) -> Path:
     return model_path
 
 
+def confirm_overwrite(output: Path) -> bool:
+    print(f"출력 파일이 이미 있습니다: {output}")
+    print("기존 파일을 덮어쓰겠습니까? [Y/N]", end=" ")
+    while True:
+        try:
+            answer = input().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no", ""}:
+            return False
+        print("Y 또는 N을 입력하세요.", end=" ")
+
+
 def main() -> int:
     args = get_args()
     audio = args.audio.expanduser().resolve()
@@ -84,14 +115,17 @@ def main() -> int:
         return 2
 
     output = (args.output.expanduser() if args.output else audio.with_suffix(".srt")).resolve()
-    if output.exists() and not args.overwrite:
-        print(f"출력 파일이 이미 있습니다: {output}\n덮어쓰려면 --overwrite를 지정하세요.", file=sys.stderr)
-        return 2
+    overwrite_allowed = args.overwrite
+    if output.exists() and not overwrite_allowed:
+        if not confirm_overwrite(output):
+            print("변환을 취소했습니다.")
+            return 0
+        overwrite_allowed = True
 
     try:
         whisper_cli = require_program("whisper-cli")
         ffmpeg = require_program("ffmpeg")
-        model = ensure_model(args.model)
+        model = ensure_model(args.model, args.model_path)
         output.parent.mkdir(parents=True, exist_ok=True)
 
         with tempfile.TemporaryDirectory(prefix="korean-srt-") as temp_dir:
@@ -114,7 +148,7 @@ def main() -> int:
             generated = base.with_suffix(".srt")
             if not generated.is_file():
                 raise RuntimeError("whisper.cpp가 SRT 파일을 만들지 않았습니다.")
-            if output.exists() and not args.overwrite:
+            if output.exists() and not overwrite_allowed:
                 raise RuntimeError(f"출력 파일이 이미 있습니다: {output}")
             shutil.move(str(generated), str(output))
         print(f"완료: {output}")

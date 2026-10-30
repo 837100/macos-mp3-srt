@@ -34,6 +34,18 @@ Apple Silicon에서는 `whisper.cpp`가 Metal GPU 가속을 사용할 수 있습
 ./transcribe.py recording.mp3 --model small
 ```
 
+외장하드에 모델 파일이 이미 있다면 파일 자체 또는 모델 폴더를 지정할 수 있습니다.
+
+```bash
+# 모델 파일을 직접 지정
+./transcribe.py recording.mp3 --model-path "/Volumes/외장하드/models/ggml-medium.bin"
+
+# 모델 폴더를 지정하면 --model 값에 맞는 파일을 폴더 안에서 찾습니다.
+./transcribe.py recording.mp3 --model small --model-path "/Volumes/외장하드/models"
+```
+
+폴더 경로를 쓸 때는 `--model`과 일치하는 모델 파일이 있어야 합니다. 예를 들어 `--model small`이면 `ggml-small.bin`을 찾습니다. 사용자 지정 경로의 모델은 다운로드되지 않습니다.
+
 모델 선택:
 
 | 모델 | 디스크 용량(대략) | 권장 상황 |
@@ -48,11 +60,13 @@ Apple Silicon에서는 `whisper.cpp`가 Metal GPU 가속을 사용할 수 있습
 
 ```text
 usage: transcribe.py [-h] [-o OUTPUT] [-m {small,medium,large-v3-turbo}]
-                     [--threads THREADS] [--overwrite] audio
+                     [--model-path MODEL_PATH] [--threads THREADS]
+                     [--overwrite] audio
 ```
 
 - `-o`, `--output`: SRT 저장 경로
 - `-m`, `--model`: Whisper 모델 (기본값 `medium`)
+- `--model-path`: 기존 모델 파일 또는 모델 폴더 경로. 생략하면 앱 지원 폴더에서 모델을 찾거나 다운로드
 - `--threads`: CPU 스레드 수 지정 (기본값은 자동)
 - `--overwrite`: 기존 SRT 파일 덮어쓰기
 
